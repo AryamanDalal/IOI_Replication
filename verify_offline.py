@@ -21,22 +21,21 @@ import torch  # noqa: E402
 from transformer_lens import HookedTransformer  # noqa: E402
 
 
-def main() -> int:
+def gpt2() -> HookedTransformer:
     torch.set_grad_enabled(False)
     print("Loading gpt2 with HF_HUB_OFFLINE=1 (no network allowed) ...", flush=True)
     try:
         model = HookedTransformer.from_pretrained("gpt2", device="cpu")
     except Exception as exc:  # pragma: no cover - diagnostic path
-        print(f"FAIL: offline load raised: {exc}")
-        print("The weights are probably not cached yet. Run download_weights.py "
-              "once while online.")
-        return 1
-
+        raise RuntimeError(
+        f"FAIL: offline load raised: {exc}\n"
+        "The weights are probably not cached yet. Run download_weights.py  "
+              "once while online.") from exc
+    
     # A real forward pass, fully offline, to prove the weights are intact.
     logits = model("The quick brown fox")
     print(f"OK  offline load + forward pass succeeded. logits shape: {tuple(logits.shape)}")
-    return 0
-
+    return model
 
 if __name__ == "__main__":
-    sys.exit(main())
+    gpt2()
