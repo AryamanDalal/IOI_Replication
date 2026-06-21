@@ -29,7 +29,7 @@ prompt. That single scalar is what activation patching moves around.
 from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
-from itertools import islice
+from itertools import islice, permutations, product
 import verify_offline
 
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import defaultdict
 from functools import partial
 from statistics import mean, stdev
 
@@ -122,15 +123,43 @@ def main() -> int:
     # One streaming pass over ioi_prompts() -- nothing is materialized, so this
     # scales to far larger NAMES/TEMPLATES without touching this code. Each
     # prompt's strings are formatted once and its variants flattened inline.
+
+        # NOTE: corrupted and partial both score IO - S2 and share the same
+        # (IO, S2) marginal, so their unpaired stats coincide by construction
+        # (observed: mean +2.2551 both; range identical; sd 0.7482 vs 0.7488).
+        # This is structural overlap, NOT a finding -- partial-as-a-set tells
+        # you nothing corrupted doesn't.
+        # DIAGNOSTIC if revisiting: mean/range identical + sd differing at the
+        # ~4th decimal = marginal twins (expected, genuinely different prompts).
+        # mean AND sd AND range all bit-identical = duplicate-generation bug
+        # (same prompts emitted twice) -- suspect the generator, not the data.
+        # Partial's real signal is in the PAIRED clean<->partial contrast (each
+        # clean prompt vs its own S2-swapped twin), never in its own spread.
     clean_diffs = []
     partial_corrupted_diffs, partial_corrupted_diffs1 = [], []
     corrupted_diffs = []
+    
+    # Role-averaging buckets for clean SD: key is the UNORDERED name pair, so the
+    # two role assignments (io=A,s=B and io=B,s=A) across all templates land in the
+    # same bucket. Collapsing a bucket to its MEAN cancels each name's per-token
+    # prior (one ordering's +prior(A)-prior(B) offsets the other's), leaving circuit
+    # variability -- that's what makes clean SD "clean". We store the values (not a
+    # running sum) because the correct average divides by the bucket count.
+    # d = dict()
+    clean_by_pair: dict[frozenset[str], list[float]] = defaultdict(list)
+    pair_orderings: dict[frozenset[str], set] = defaultdict(set)  # distinct IOs seen per pair
 
     for p in _tick(ioi_prompts(), "prompts"):
         io_id, s_id = model.to_single_token(p.io), model.to_single_token(p.s)
 
         # clean (ABB): IO - S
-        clean_diffs.append(logit_diff(model, model.to_tokens(p.clean), io_id, s_id))
+        clean_diff = logit_diff(model, model.to_tokens(p.clean), io_id, s_id)
+        clean_diffs.append(clean_diff)
+        pair_id = frozenset({str(io_id), str(s_id)})
+        # d[pair_id] = d.get(pair_id, 0) + clean_diff/2   # /2 doesn't average a 10-entry bucket
+        clean_by_pair[pair_id].append(clean_diff)
+        pair_orderings[pair_id].add(io_id)            # distinct IOs seen for this pair
+
 
         # partial (S2-swap): IO - s (kept subject), and IO - the swapped S2 name.
         for text, c in zip(p.partial_corrupted, p.partial_s2):
@@ -144,8 +173,26 @@ def main() -> int:
                 logit_diff(model, model.to_tokens(text),
                            model.to_single_token(a), model.to_single_token(c)))
 
-    # mean / sd / range for each metric across the whole prompt set.
-    print(f"[c] clean     (IO - S):  {_fmt_stats(clean_diffs)}")
+    # mean / sd / range for each metric.
+    #
+    # DISCLAIMER: SD for corrupted/partial is over individual prompts, not
+    # role-averaged, so it carries per-name prior and distractor-identity variance
+    # on top of circuit variability -- it's an upper bound on the true spread, not
+    # the spread. Clean SD is role-averaged and clean.
+    #
+    # Clean: collapse each unordered name pair to its mean first (role-averaging),
+    # then report mean/sd/range over those per-pair values.
+    clean_pair_means = [mean(v) for v in clean_by_pair.values()]
+    # Sanity-check the role-averaging assumptions: every pair must have seen BOTH
+    # orderings (so the per-name prior actually cancels), and equal bucket sizes
+    # mean the design is balanced (so the role-avg mean matches the grand mean --
+    # only the SD should differ).
+    both_orderings = all(len(s) == 2 for s in pair_orderings.values())
+    equal_sizes = len({len(v) for v in clean_by_pair.values()}) == 1
+    # print(f"[c] clean     (IO - S):  {_fmt_stats(clean_diffs)}")
+    print(f"[c] clean     (IO - S, role-avg): {_fmt_stats(clean_pair_means)}")
+    print(f"[c]   grand={mean(clean_diffs):+.4f}  pair-avg-mean={mean(clean_pair_means):+.4f}  "
+          f"both_orderings={both_orderings}  equal_sizes={equal_sizes}")
     print(f"[c] corrupted (IO - S2): {_fmt_stats(corrupted_diffs)}")
     print(f"[c] partial   (IO - S2): {_fmt_stats(partial_corrupted_diffs1)}")
 
@@ -174,7 +221,7 @@ def main() -> int:
             competitors = (s_id, model.to_single_token(s2))
             base = logit_diff(model, tokens, io_id, competitors)
             patched = patched_logit_diff(model, tokens, io_id, competitors, hook_name, clean_act, pos)
-            partial_patch_deltas.append(abs(base - patched))
+            partial_patch_deltas.append(patched - base)
 
     print(f"[d] |partial - patched| (L{layer}, pos {pos}): {_fmt_stats(partial_patch_deltas)}")
 
@@ -192,7 +239,7 @@ def main() -> int:
             competitors = (s_id, model.to_single_token(b), model.to_single_token(c))
             base = logit_diff(model, tokens, io_id, competitors)
             patched = patched_logit_diff(model, tokens, io_id, competitors, hook_name, clean_act, pos)
-            corrupted_patch_deltas.append(abs(base - patched))
+            corrupted_patch_deltas.append(patched - base)
 
     print(f"[e] |corrupted - patched| (L{layer}, pos {pos}): {_fmt_stats(corrupted_patch_deltas)}")
 
