@@ -1,32 +1,4 @@
-# Python virtual environment (recreate from requirements.txt)
-.venv/
-venv/
-env/
-.vscode/ 
-
-# Byte-compiled / caches
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ipynb_checkpoints/
-
-# Jupyter
-*.nbconvert.ipynb
-profile_default/
-ipython_config.py
-
-# Model weights are cached in ~/.cache/huggingface, NOT in the repo.
-# If anything large lands locally, keep it out:
-*.pt
-*.bin
-*.safetensors
-
-# OS / editor noise
-.DS_Store
-*.swp
-
-# Local env overrides (keep secrets out of the public repo)
-.env
-.env.local
+# Ignore everything by default. This is the P1 submodule (IOI_Replication remote):
+# share files publicly one at a time with `git add -f <path>`, then commit.
+*
+!.gitignore
