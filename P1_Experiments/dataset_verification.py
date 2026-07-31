@@ -1,7 +1,10 @@
-from transformer_lens import HookedTransformer
 import torch
 from dataset import Names, Templates
+import os
 
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+from transformer_lens import HookedTransformer
 
 def load_model() -> HookedTransformer:
     """Load GPT-2 small onto the CPU with autograd disabled (inference only)."""
@@ -23,7 +26,7 @@ def verify_names(model: HookedTransformer) -> None:
             bad.append(name)
 
     assert not bad, f"The given names are multitoken: {bad}."
-    print("All names are a single token.\n")
+    print("\n","All names are a single token.\n")
     return None
 
 def verify_alignment(model: HookedTransformer) -> None:

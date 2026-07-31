@@ -230,7 +230,7 @@ class IOI:
         # so the triple count must equal the number of templates (BATCH_SIZE).
         assert names.NAMES_PER_BATCH // 3 == templates.BATCH_SIZE
 
-    def get_position_to_role(self, template_ordering: str) -> dict[str, str]:
+    def _get_position_to_role(self, template_ordering: str) -> dict[str, str]:
         """
         Computes the roles at each position n1, n2, n3 based on the template ordering.
         """
@@ -239,7 +239,7 @@ class IOI:
             return {"N1":"io", "N2":"s1", "N3":"s2"}
         return  {"N1":"s1", "N2":"io", "N3":"s2"}
 
-    def get_role_to_name(self, name_triplet: tuple[str, str, str]) -> dict[str, dict[str, str]]:
+    def _get_role_to_name(self, name_triplet: tuple[str, str, str]) -> dict[str, dict[str, str]]:
         """
         Assigns the role to each name in the name triplet for each template type.
         Returns a nested dict for each template type with the name assignments for IO, S1, and S2
@@ -263,8 +263,8 @@ class IOI:
         
         return -> Prompt(text: text, io: io, s1: s1, s2: s2)
         """
-        role_to_name = self.get_role_to_name(name_triplet)[prompt_type]      # {"io": name, "s1": name, "s2": name}
-        position_to_role = self.get_position_to_role(template_ordering)       # {"N1": role, "N2": role, "N3": role}
+        role_to_name = self._get_role_to_name(name_triplet)[prompt_type]      # {"io": name, "s1": name, "s2": name}
+        position_to_role = self._get_position_to_role(template_ordering)       # {"N1": role, "N2": role, "N3": role}
         position_to_name = {position: self._name_tok(role_to_name[role]) for position, role in position_to_role.items()}
         N1, N2, N3 = position_to_name["N1"], position_to_name["N2"], position_to_name["N3"]
 
@@ -313,14 +313,14 @@ class IOI:
                     self._single_batch_index(prompt = prompt, scrambled_prompt = scrambled_prompt, name_triplet = name_triplet, template_ordering = template_ordering, template_size = template_size)
         return None
     
-    def create_dataset(self) -> None:
+    def create_dataset(self) -> tuple[dict,list[IOIPrompt]]:
         """
         Creates the entire dataset by processing each batch one at a time using the _process_batch helper.
         """
         assert len(self.ioi_prompts) == 0
         for batch_names in self.name_batches:
             self._process_batch(batch_names = batch_names)
-        return None
+        return (self.prompts, self.ioi_prompts)
 
     def _name_tok(self, name: str) -> str:
         """Mid-sentence GPT-2 form of a name: a leading space + the name."""
