@@ -193,7 +193,7 @@ class Names:
             "Samuel",
         ]
         self.NAMES_PER_BATCH = 15
-        self.NUMBER_OF_BATCHES = 20
+        self.NUMBER_OF_BATCHES = 5
         self.BASE_SEED = 20260716
         assert len(set(self.ALL_NAMES)) == len(self.ALL_NAMES)
 
@@ -325,3 +325,8 @@ class IOI:
     def _name_tok(self, name: str) -> str:
         """Mid-sentence GPT-2 form of a name: a leading space + the name."""
         return " " + name
+
+
+    """
+    Create a shared class and move the prompt parameters to become input of the class. 
+    """

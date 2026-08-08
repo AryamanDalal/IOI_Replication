@@ -1,6 +1,9 @@
 import torch
-from dataset import Names, Templates
+from dataset import Names, Templates, IOI
 import os
+import logging
+
+logging.getLogger().addFilter(lambda r: "already cached" not in r.getMessage())
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -10,6 +13,9 @@ def load_model() -> HookedTransformer:
     """Load GPT-2 small onto the CPU with autograd disabled (inference only)."""
     torch.set_grad_enabled(False)
     model = HookedTransformer.from_pretrained("gpt2", device="cpu")
+    model.set_use_attn_result(True)
+    model.set_use_split_qkv_input(True)
+    model.set_use_hook_mlp_in(True)
     return model
 
 def verify_names(model: HookedTransformer) -> None:
@@ -63,6 +69,10 @@ def verify_alignment(model: HookedTransformer) -> None:
 
     print("All sentences of the same length type tokenize to the same number of tokens with the name tokens occurring uniformly at the same sequence positions", "\n")
     return None
+
+def load_prompts_dict():
+    prompts_dict, ioi_lst = IOI().create_dataset() 
+    return prompts_dict, ioi_lst
 
 if __name__ == "__main__":
     model = load_model()

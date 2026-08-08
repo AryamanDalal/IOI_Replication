@@ -8,6 +8,7 @@ import numpy as np
 
 from dataset_verification import load_model, verify_names, verify_alignment
 from dataset import IOI, Prompt
+from process_dataset import process_prompts_dict, Run_Details, collect_processed_prompts_lists
 # Imported only for type hints. transformer_lens is already imported (with offline mode
 # set) as a side effect of importing dataset_verification above, so this line is safe here.
 from transformer_lens import HookedTransformer
@@ -26,8 +27,7 @@ class ResidualComponents:
 
 
 class LogitAttribution:
-    def __init__(self, model: HookedTransformer, prompts_dict: dict,
-                 orderings: list[str], sizes: list[str], prompt_type: str = "clean"):
+    def __init__(self, model: HookedTransformer, processed_prompts_list = list[Run_Details]):
         """
         model        --> a loaded HookedTransformer (run_with_cache / set_use_attn_result ready)
         prompts_dict --> the dict returned by IOI().create_dataset(): {(ordering, size): {variant: [Prompt]}}
@@ -36,15 +36,11 @@ class LogitAttribution:
         prompt_type  --> which variant to attribute: "clean" | "corrupt" | "negative" | "scrambled"
         """
         self.model = model
-        self.prompts_dict = prompts_dict
-        self.orderings, self.sizes, self.prompt_type = orderings, sizes, prompt_type
+        self.processed_prompts_list = processed_prompts_list
 
         # Component counts fixed by the architecture: one result per (layer, head) and one per MLP.
         self.total_heads = model.cfg.n_layers * model.cfg.n_heads
         self.total_mlps = model.cfg.n_layers
-
-        # The prompts under attribution, flattened over orderings × sizes for the chosen prompt_type.
-        self.prompts: list[Prompt] = self._collect_prompts()
 
         # Populated by the pipeline below; declared here so all state is visible up front.
         self.components = None                     # ResidualComponents once collected (fields [C, N, d_model])
@@ -57,20 +53,6 @@ class LogitAttribution:
         self.bias_logit_attr = None                # [1, N] — attention bias b_O attribution
         self.unembedding_bias = None               # [1, N] — b_U[IO] - b_U[S]
         self.total_contribution = None             # [N] — measured logit[IO] - logit[S] (recorded in collect_components)
-
-    # -- Section 1: collect the prompts from the existing IOI dataset -----------------------
-
-    def _collect_prompts(self) -> list[Prompt]:
-        """
-        Flatten the prompts of the configured prompt_type into a single list, iterating
-        orderings (major) then sizes (minor) over the pre-built IOI dataset.
-        return -> list[Prompt]
-        """
-        prompts = []
-        for ordering in self.orderings:
-            for size in self.sizes:
-                prompts.extend(self.prompts_dict[(ordering, size)][self.prompt_type])
-        return prompts
 
     # -- Section 2: organize the residual stream into named components ----------------------
 
@@ -103,9 +85,9 @@ class LogitAttribution:
         token_embedding, position_embedding, bias = [], [], []
         io, s1, total_contribution = [], [], []
 
-        for prompt in self.prompts:
+        for processed_prompt in self.processed_prompts_list:
             # Full forward pass: logits for the whole sequence + the cache for the decomposition.
-            logits, cache = self.model.run_with_cache(prompt.text)
+            logits, cache = processed_prompt.logits, processed_prompt.cache
             stack = cache.get_full_resid_decomposition(layer=-1, pos_slice=-1, expand_neurons=False, apply_ln=True)
 
             # Divide the stack into its named component groups (see _split_stack).
@@ -117,13 +99,13 @@ class LogitAttribution:
             bias.append(resid_bias)
 
             # IO / S token ids, and the measured logit[IO] - logit[S] read off THIS forward pass.
-            io_token, s1_token = self.model.to_single_token(prompt.io), self.model.to_single_token(prompt.s1)
+            io_token, s1_token = processed_prompt.io_id, processed_prompt.s1_id
             io.append(io_token)
             s1.append(s1_token)
-            final_logits = logits[0, -1, :]                             # [d_vocab] at the final position
-            total_contribution.append(final_logits[io_token] - final_logits[s1_token])
+            logit_diff = processed_prompt.logit_diff
+            total_contribution.append(logit_diff)
 
-        # Stack each list once along the prompt axis (dim=1): [C, d_model] -> [C, N, d_model].
+        # Stack each list once along the processed_prompt axis (dim=1): [C, d_model] -> [C, N, d_model].
         self.components = ResidualComponents(
             head_results=torch.stack(head_results, dim=1),
             mlp_results=torch.stack(mlp_results, dim=1),
@@ -189,7 +171,7 @@ class LogitAttribution:
 
     def report_shapes(self) -> None:
         """Diagnostic: print the prompt count and the component / direction / attribution shapes."""
-        print(len(self.prompts))
+        print(len(self.processed_prompts_list))
         print(self.components.head_results.shape)
         print(self.components.mlp_results.shape)
         print(self.direction_vectors.shape)
@@ -318,7 +300,21 @@ class LogitAttribution:
         ax.legend()
         plt.tight_layout(); plt.show()
         return None
+    
+    def run(self):
+        self.collect_components()
+        self.compute_direction_vectors()
+        self.compute_logit_attribution()
+        self.report_shapes()
+        self.check_faithfulness()
 
+        # The five charts.
+        self.plot_composition()
+        self.plot_head_heatmap()
+        self.plot_top_heads()
+        self.plot_mlp()
+        self.plot_layerwise()
+        return None
 
 def main() -> None:
     """
@@ -327,28 +323,19 @@ def main() -> None:
     different prompt_type / ordering / size.
     """
     model = load_model()
-    verify_names(model)
-    verify_alignment(model)
+    processed_prompts_dict = process_prompts_dict(model)
 
-    prompts_dict, _ = IOI().create_dataset()
+    orderings, sizes, prompt_types=["IO_S1_S2", "S1_IO_S2"], ["small"], ["clean"]
+    processed_prompts_lists: list[list[Run_Details]] = collect_processed_prompts_lists(processed_prompts_dict=processed_prompts_dict, 
+                                                            orderings=orderings,
+                                                            sizes=sizes,
+                                                            prompt_types=prompt_types
+    )
+    processed_prompts_list: list[Run_Details] = processed_prompts_lists[0]
 
-    torch.set_grad_enabled(False)     # inference only (load_model already sets this; kept for parity)
-    model.set_use_attn_result(True)   # expose per-head results for get_full_resid_decomposition
-
-    attribution = LogitAttribution(model, prompts_dict,
-                                   orderings=["IO_S1_S2", "S1_IO_S2"], sizes=["large"], prompt_type="clean")
-    attribution.collect_components()   # also records the measured total from this forward pass
-    attribution.compute_direction_vectors()
-    attribution.compute_logit_attribution()
-    attribution.report_shapes()
-    attribution.check_faithfulness()
-
-    # The five charts. (An all-prompt-types side-by-side driver over these belongs here.)
-    attribution.plot_composition()
+    attribution = LogitAttribution(model, processed_prompts_list)
+    attribution.run()
     attribution.plot_head_heatmap()
-    attribution.plot_top_heads()
-    attribution.plot_mlp()
-    attribution.plot_layerwise()
     return None
 
 
