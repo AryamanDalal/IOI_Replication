@@ -1,13 +1,21 @@
 # IOI Replication
 
-A from-scratch replication of **"Interpretability in the Wild: A Circuit for Indirect
-Object Identification in GPT-2 Small"** (Wang et al., 2022), built on
-[TransformerLens](https://github.com/TransformerLensOrg/TransformerLens).
+A from-scratch replication and extension of **"Interpretability in the Wild: A
+Circuit for Indirect Object Identification in GPT-2 Small"** (Wang et al., 2022),
+built on [TransformerLens](https://github.com/TransformerLensOrg/TransformerLens).
 
-The goal is not to re-run the authors' code. It is to rebuild the circuit-discovery
-pipeline — dataset, direct logit attribution, path patching, circuit validation —
-independently, and see which of the paper's findings survive contact with my own
-implementation.
+This is not a walkthrough of the paper and not a re-run of the authors' code. It is
+an independent rederivation of the IOI circuit, built to produce two things:
+
+1. **A general framework for identifying and characterizing a circuit from the
+   ground up** — a sequence of measurements where each stage is motivated by the
+   specific question the previous stage could not answer, and where the
+   decomposition is verified to be exact at every step.
+2. **An answer to a question the original paper leaves open:** is the IOI circuit a
+   property of the *task*, or of the *prompt templates* it was discovered on?
+
+Along the way, it tests which of the paper's findings survive contact with an
+independent implementation.
 
 GPT-2 small, CPU only, offline weights.
 
@@ -19,114 +27,140 @@ Indirect object identification. Given
 
 the model should prefer `" Mary"` (the indirect object, **IO**) over `" John"` (the
 repeated subject, **S**). The readout throughout is the **logit difference**
-`logit[IO] - logit[S]` at the final position — a signed, per-prompt scalar that
-stays interpretable under ablation and patching.
+`logit[IO] - logit[S]` at the final position — a signed, per-prompt scalar that stays
+interpretable under ablation and patching.
 
-## Pipeline
+The dataset is built so that, within a template size, every prompt tokenizes to the
+same length and the name tokens land at identical sequence positions. That constraint
+is what makes caches from different prompts stackable and comparable position by
+position, and it is asserted rather than assumed.
 
-| stage | file | state |
-|---|---|---|
-| Dataset construction | `dataset.py` | done |
-| Tokenizer / alignment verification | `dataset_verification.py` | done |
-| Forward passes + cache records | `process_dataset.py` | done |
-| Direct logit attribution | `direct_logit_attribution.py` | done |
-| Path patching | *(not published)* | **~half done** |
-| Circuit validation | — | not started |
+## The framework
 
-### `dataset.py` — the prompt set
+The core methodological arc is a causal-mediation story, rebuilt from first
+principles rather than reproduced from the paper's code:
 
-Builds a dict keyed by `(template_ordering, template_size)`, each holding four
-prompt variants that share a name triplet and a sentence frame:
+- **Direct logit attribution** decomposes the prediction into one signed
+  contribution per head, surfacing candidate heads — but it is correlational.
+- **Direct effects** (path patching each head straight to the logits) confirm the
+  candidates causally.
+- **Total effects** (activation patching) reveal a larger set of heads and a gap:
+  heads whose influence doesn't reach the logits directly. The circuit is not a
+  list of heads; it is heads talking to each other.
+- **Per-head ΔDLA between conditions** localizes exactly where each upstream head's
+  influence lands downstream, with a conservation check — the ΔDLA contributions
+  must sum to the direct/total gap, so the decomposition is provably complete
+  rather than assumed.
+- **Q/K/V decomposition** names the mechanism of each interaction: an upstream
+  head's effect on a downstream head is pinned to the query, key, or value route it
+  travels through, with the joint three-path patch as the ceiling (the routes
+  interact through the attention softmax and are not additive).
+- **Dedicated ablation tests** then establish faithfulness, completeness, and
+  minimality — properties the narrative above motivates but does not prove.
 
-- **clean** — IO appears once, S twice (the IOI task proper)
-- **corrupt** — ABC: three distinct names, so no name is repeated
-- **negative** — clean with the IO and S roles exchanged
-- **scrambled** — same names, same length, but the tokens between the second name
-  and the final clause are shuffled into word salad
+Each stage is designed to ship with diagrams — what is attended to, where effects
+flow — because a circuit claim should be inspectable, not just reported.
 
-Two orderings (`IO_S1_S2`, `S1_IO_S2`) cross with two sizes (`small`, `large`).
-`large` pads ~200 tokens of distractor text between the name mentions to test
-whether the circuit's behaviour is distance-dependent.
+None of this machinery is IOI-specific. The prompt harness, the patching classes,
+the attribution and mediation tooling, and the validation suite are being built so
+the same sequence of measurements — and the same diagrams — can be re-run on a
+different model, a different task, or the same model at a different point in
+training. Building the instrument once and reusing it is the point of the design.
 
-The design constraint that makes everything downstream tractable: **within a size,
-every template tokenizes to the same length, and the name tokens land at identical
-sequence positions.** That is what allows caches from different prompts to be
-stacked and compared position-by-position. Names are single-token under GPT-2's
-BPE with a leading space, and sampled in reproducible batches from a fixed seed.
+## The research questions
 
-### `dataset_verification.py` — proving the constraint holds
+Wang et al. discovered the circuit on a narrow family of hand-written templates.
+This project runs the full framework across a systematically varied prompt suite —
+scrambled context, shorter and longer prompts, varied name pools — and measures
+circuit survival at the *circuit* level, not just the behavioral level: do the same
+heads keep the same roles, the same attention signatures, the same mediation
+structure? The underlying question is what the circuit is actually keying on — the
+sentence's structure, or the names themselves and their positional rhythm. The two
+possibilities imply very different circuits, and the sweep is designed to tell them
+apart rather than to confirm either.
 
-Asserts what `dataset.py` assumes rather than trusting it: every name is a single
-token, and every sentence of a given size tokenizes to the same length with names
-at the same positions. Also the single place the model is configured —
-`set_use_attn_result`, `set_use_split_qkv_input`, `set_use_hook_mlp_in`, all
-required for per-head decomposition and for patching individual Q/K/V inputs later.
+A second question sits one level deeper, inside the name-mover heads themselves: a
+head's selectivity could live in *where it attends* (QK) or in *what it copies once
+attending* (OV). Whether the OV path of the top name mover is a name-biased copier
+or a generic one — measurable via OV coverage across name vs. non-name tokens, and
+via OV-swap interventions with attention frozen — determines which kind of mechanism
+this circuit actually is.
 
-### `process_dataset.py` — one forward pass, reused everywhere
+## Rigor
 
-Runs each prompt once and freezes the result into a `Run_Details` record: the
-prompt, the `ActivationCache`, the logits, the IO/S token ids, and the logit
-difference.
+Much of this work is exploratory — probing a mechanism to see what it does, not
+betting on an outcome — and it is reported as such. Where an outcome *is*
+confidently expected, the expectation is encoded as an assertion in the code so a
+violation fails loudly instead of being explained away. Every reported number
+carries where it was measured, measured results are distinguished from inferred
+ones, and divergences from the paper's values are logged rather than reconciled
+away. Structural invariants — tokenization, position alignment, frozen-run no-ops —
+are asserted rather than assumed, and the DLA decomposition is gated by a
+faithfulness check confirming the per-component contributions reconstruct the
+measured logit difference. Measured values for the known name-mover heads serve as
+regression anchors as the code evolves.
 
-This exists because the analyses downstream are *not* independent. Attribution,
-patching, and validation all want the same caches, and re-running the model per
-analysis is both slow on CPU and a correctness hazard — a stale or mismatched
-cache is invisible until the numbers quietly disagree. Computing once and passing
-records around makes cache provenance explicit.
+## Where this is
 
-### `direct_logit_attribution.py` — who writes the answer?
+The measurement pipeline is built and published. The analysis layer on top of it is
+not finished.
 
-Decomposes the final residual stream into its writers via
-`get_full_resid_decomposition` and projects each onto the IO−S unembedding
-direction, giving a per-component contribution to the logit difference.
+**Working end to end.** Dataset construction and its tokenizer/alignment
+verification; a forward-pass layer that runs each prompt once and freezes the result
+into a reusable record; direct logit attribution with a faithfulness check that
+confirms the per-component contributions reconstruct the measured logit difference.
 
-Components: 144 attention heads (12 layers × 12), 12 MLPs, token embeddings,
-positional embeddings, and biases. A **faithfulness check** confirms the
-decomposition sums back to the measured logit difference — if the parts don't
-reconstruct the whole, the attribution is meaningless and everything after it is
-too.
+**Working, newly published.** Path patching: specification validation, whole-node
+patching of head and MLP outputs, sender→receiver edge patching into a receiver's
+Q/K/V or MLP input, and the direct-effect vs total-effect distinction. This is the
+part that answers *who feeds whom* rather than *who writes the answer* — a head with
+near-zero direct contribution can still be load-bearing because it supplies the
+input another head depends on.
 
-Outputs five figures: composition breakdown, a 12×12 per-head heatmap, top heads
-ranked, per-MLP contributions, and a layerwise cumulative trace.
+**Not built yet.** The aggregation layer that turns a sweep of patched runs into
+ranked effects, and circuit validation proper — faithfulness, completeness, and
+minimality of a recovered head set against the paper's.
 
-## Path patching — halfway
+So the published code can currently *perform* an intervention and hand back the
+patched runs, but does not yet score a circuit for you.
 
-**Not in this repository yet.** It exists locally as a working notebook and is
-roughly half finished; it will be published once the interface settles.
+## What has actually been run
 
-Direct logit attribution answers *who writes to the output*. It cannot answer *who
-feeds whom* — a head with near-zero direct contribution may still be load-bearing
-because it supplies the input another head depends on. Path patching isolates the
-causal edge between a sender and a receiver by patching the sender's contribution
-along one path while freezing everything else, so the measured change is
-attributable to that path alone.
+Exploratory sweeps have been run against this dataset, including an 8.4-hour
+overnight pass over every node and receiver channel. Those runs used a separate
+throwaway harness, **not** the `path_patching.py` published here, and their outputs
+are deliberately not in this repository — they are 1.2 GB of tensors.
 
-Current state:
-
-- **Working** — patch/freeze pairing over `Run_Details`, patching head outputs
-  (`z`) and MLP outputs, and the direct-effect vs total-effect distinction
-- **In progress** — the receiver-side hooks (`q_input` / `k_input` / `v_input`)
-  and validation of the patch specification
-- **Not started** — indirect-effect composition across a sender→receiver chain,
-  and the statistics layer aggregating patched vs unpatched logit differences
-
-The expensive part is that a full per-head sweep is ~27 minutes per effect on CPU,
-so the interface needs to be right before the sweep is worth running.
-
-Once path patching lands, the remaining work is circuit validation: faithfulness,
-completeness, and minimality of the recovered head set against the paper's.
+[`EXPERIMENT_LOG.md`](EXPERIMENT_LOG.md) records what was run and what it showed,
+with the measured numbers. Read it as a lab notebook: the runs were exploratory,
+some at small prompt counts, and nothing in it has been through the validation layer
+described above. It is a log, not a result.
 
 ## Running it
 
 ```bash
 python dataset_verification.py       # verify tokenization and alignment
 python process_dataset.py            # build the cached run records
-python direct_logit_attribution.py   # attribution + the five figures
+python direct_logit_attribution.py   # attribution + five figures
 ```
 
+`path_patching.py` is importable and its classes are usable, but its `main()` only
+assembles the freeze/patch pairs — there is no end-to-end runner yet, pending the
+aggregation layer.
+
 Weights are read from a local Hugging Face cache; `HF_HUB_OFFLINE` and
-`TRANSFORMERS_OFFLINE` are set at import time, so no network access is required
-or attempted.
+`TRANSFORMERS_OFFLINE` are set before TransformerLens is imported, so no network
+access is required or attempted.
+
+## Where this goes
+
+The cross-model leg is the second axis of the same question — whether the answer
+survives a change of substrate, not just a change of prompt. Beyond that, the
+framework is built to support a natural research program it does not yet execute:
+the circuit after fine-tuning, across training checkpoints, and on other tasks
+entirely. This repo is the first project in a longer mechanistic interpretability
+program working toward decoding internal model representations into explicit
+relational structure; the instrument built here is its foundation.
 
 ## Reference
 
