@@ -6,8 +6,7 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 
-from dataset_verification import load_model, verify_names, verify_alignment
-from dataset import IOI, Prompt
+from dataset_verification import load_model
 from process_dataset import process_prompts_dict, Run_Details, collect_processed_prompts_lists
 # Imported only for type hints. transformer_lens is already imported (with offline mode
 # set) as a side effect of importing dataset_verification above, so this line is safe here.
@@ -27,13 +26,16 @@ class ResidualComponents:
 
 
 class LogitAttribution:
-    def __init__(self, model: HookedTransformer, processed_prompts_list = list[Run_Details]):
+    # -- Section 1: construction and the state the pipeline fills ---------------------------
+
+    def __init__(self, model: HookedTransformer, processed_prompts_list: list[Run_Details]):
         """
-        model        --> a loaded HookedTransformer (run_with_cache / set_use_attn_result ready)
-        prompts_dict --> the dict returned by IOI().create_dataset(): {(ordering, size): {variant: [Prompt]}}
-        orderings    --> template orderings to include, e.g. ["IO_S1_S2", "S1_IO_S2"]
-        sizes        --> template sizes to include, e.g. ["large"]
-        prompt_type  --> which variant to attribute: "clean" | "corrupt" | "negative" | "scrambled"
+        Decompose the measured logit[IO] - logit[S] at the final position into the contribution
+        of every residual-stream component, over one flat list of already-cached prompts.
+
+        model                  --> a loaded HookedTransformer (run_with_cache / set_use_attn_result ready)
+        processed_prompts_list --> one list of cached Run_Details, as returned by
+                                   process_dataset.collect_processed_prompts_lists
         """
         self.model = model
         self.processed_prompts_list = processed_prompts_list
@@ -127,7 +129,8 @@ class LogitAttribution:
         Sets self.direction_vectors ([N, d_model]). return -> None
         """
         self.direction_vectors = (self.model.tokens_to_residual_directions(self.io)
-                                  - self.model.tokens_to_residual_directions(self.s1))
+                                  - self.model.tokens_to_residual_directions(self.s1)
+                                  ).reshape(len(self.io), -1)   # [N, d_model]
         return None
 
     # -- Section 4: compute and store the logit attribution per component -------------------
@@ -300,8 +303,15 @@ class LogitAttribution:
         ax.legend()
         plt.tight_layout(); plt.show()
         return None
-    
-    def run(self):
+
+    # -- Section 6: pipeline entry point ----------------------------------------------------
+
+    def run(self) -> None:
+        """
+        Drive the pipeline end to end in dependency order: collect the components, form the
+        IO−S direction, project one onto the other, print the diagnostics, then draw the charts.
+        return -> None
+        """
         self.collect_components()
         self.compute_direction_vectors()
         self.compute_logit_attribution()
@@ -316,21 +326,24 @@ class LogitAttribution:
         self.plot_layerwise()
         return None
 
+
 def main() -> None:
     """
-    Load and verify the model, build the IOI dataset, then run the DLA pipeline for one
-    configuration and render the charts. Change the constructor arguments to attribute a
-    different prompt_type / ordering / size.
+    Load the model, cache a forward pass per prompt, then run the DLA pipeline for one
+    configuration and render the charts. Change the orderings / sizes / prompt_types below to
+    attribute a different slice of the dataset.
     """
     model = load_model()
     processed_prompts_dict = process_prompts_dict(model)
 
-    orderings, sizes, prompt_types=["IO_S1_S2", "S1_IO_S2"], ["small"], ["clean"]
-    processed_prompts_lists: list[list[Run_Details]] = collect_processed_prompts_lists(processed_prompts_dict=processed_prompts_dict, 
-                                                            orderings=orderings,
-                                                            sizes=sizes,
-                                                            prompt_types=prompt_types
+    orderings, sizes, prompt_types = ["IO_S1_S2", "S1_IO_S2"], ["small"], ["clean"]
+    processed_prompts_lists: list[list[Run_Details]] = collect_processed_prompts_lists(
+        processed_prompts_dict=processed_prompts_dict,
+        orderings=orderings,
+        sizes=sizes,
+        prompt_types=prompt_types
     )
+    # One prompt_type and one size were requested, so the collection holds a single list.
     processed_prompts_list: list[Run_Details] = processed_prompts_lists[0]
 
     attribution = LogitAttribution(model, processed_prompts_list)
