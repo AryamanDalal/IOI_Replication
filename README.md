@@ -79,12 +79,18 @@ sentence's structure, or the names themselves and their positional rhythm. The t
 possibilities imply very different circuits, and the sweep is designed to tell them
 apart rather than to confirm either.
 
-A second question sits one level deeper, inside the name-mover heads themselves: a
-head's selectivity could live in *where it attends* (QK) or in *what it copies once
-attending* (OV). Whether the OV path of the top name mover is a name-biased copier
-or a generic one — measurable via OV coverage across name vs. non-name tokens, and
-via OV-swap interventions with attention frozen — determines which kind of mechanism
-this circuit actually is.
+A second question sits one level inside the interactions themselves: **through which
+channel does each upstream head act on the head it feeds?** An influence arriving at
+a receiver's query changes *what that head looks for*; at its key, *what can be
+found*; at its value, *what gets copied once found*. These are different mechanisms,
+and the paper's account implies a specific answer — the S-inhibition heads should
+act on the name movers' queries. Preliminary exploratory runs (see the
+[experiment log](EXPERIMENT_LOG.md)) find exactly that, with key- and value-route
+effects at noise level, three orders of magnitude below the query route. Confirming
+that channel assignment through the published pipeline and its validation layer, and
+then testing whether the assignment itself survives the prompt sweep — whether the
+*routing* of the circuit is as stable as its membership — is the second axis of the
+circuit-survival question.
 
 ## Rigor
 
@@ -99,6 +105,27 @@ are asserted rather than assumed, and the DLA decomposition is gated by a
 faithfulness check confirming the per-component contributions reconstruct the
 measured logit difference. Measured values for the known name-mover heads serve as
 regression anchors as the code evolves.
+
+## Authorship
+
+The experimental design and the logic of this codebase are mine: the algorithms,
+the hooks, the assertions, and the architecture of every module were designed and
+first written by me.
+
+Claude Code was used, always against logic I had already specified, in a few
+bounded ways. It edited my code for clarity — restructuring what I had written
+into cleaner form while preserving its behavior. It wrote occasional small helpers
+(two or three lines, one or two per file at most) implementing steps I had already
+defined. Under my direct oversight it wrote the mechanical validation code in
+`Patch_Dict_Verification` and the matplotlib charting code. And it drafted
+documentation prose, including [`EXPERIMENT_LOG.md`](EXPERIMENT_LOG.md), against
+numbers it extracted and verified from the saved artifacts rather than recalled.
+
+Where behavior-preservation mattered it was checked rather than assumed — polish
+passes were verified against the prior revision (identical output hashes;
+assertion and success paths cross-checked on matched specifications) — and those
+checks are recorded in the commit messages. Earlier commit messages state this
+division of labor more coarsely; this section is the authoritative version.
 
 ## Where this is
 
@@ -155,12 +182,16 @@ access is required or attempted.
 ## Where this goes
 
 The cross-model leg is the second axis of the same question — whether the answer
-survives a change of substrate, not just a change of prompt. Beyond that, the
-framework is built to support a natural research program it does not yet execute:
-the circuit after fine-tuning, across training checkpoints, and on other tasks
-entirely. This repo is the first project in a longer mechanistic interpretability
-program working toward decoding internal model representations into explicit
-relational structure; the instrument built here is its foundation.
+survives a change of substrate, not just a change of prompt. One level deeper sits a
+question this project sets up but does not answer: whether a name mover's
+selectivity lives in *where it attends* (QK) or in *what it copies once attending*
+(OV) — measurable via OV coverage across name vs. non-name tokens, and via OV-swap
+interventions with attention frozen. Beyond that, the framework is built to support
+a natural research program it does not yet execute: the circuit after fine-tuning,
+across training checkpoints, and on other tasks entirely. This repo is the first
+project in a longer mechanistic interpretability program working toward decoding
+internal model representations into explicit relational structure; the instrument
+built here is its foundation.
 
 ## Reference
 
